@@ -1,0 +1,31 @@
+name: DB Probe
+
+on:
+  workflow_dispatch: {}
+  # Add a schedule when ready. Kept manual for testing.
+  # schedule:
+  #   - cron: "10 22 * * *"  # 22:10 UTC runs at 03:40 IST next day
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run probe
+        run: python db_probe.py
