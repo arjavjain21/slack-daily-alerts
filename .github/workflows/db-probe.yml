@@ -2,9 +2,6 @@ name: DB Probe
 
 on:
   workflow_dispatch: {}
-  # Add a schedule when ready. Kept manual for testing.
-  # schedule:
-  #   - cron: "10 22 * * *"  # 22:10 UTC runs at 03:40 IST next day
 
 jobs:
   probe:
@@ -27,5 +24,5 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run probe
-        run: python db_probe.py
+      - name: Run aggregation for IST yesterday
+        run: python agg_report.py
