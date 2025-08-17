@@ -40,8 +40,10 @@ SELECT
   SUM(bounce_count)      AS bounces
 FROM base
 GROUP BY ist_yday, client_name
+HAVING SUM(total_sent) > 0
 ORDER BY client_name;
 """
+
 
 def fetch_rows():
     with psycopg.connect(DSN) as conn:
@@ -165,6 +167,7 @@ def post_to_slack(blocks):
 
 def main():
     cols, rows = fetch_rows()
+    rows = [r for r in rows if r["sent"] > 0]
     blocks = build_message(rows)
     post_to_slack(blocks)
 
