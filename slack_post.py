@@ -108,7 +108,7 @@ def build_message(rows):
     zero_positive.sort(key=lambda x: x[0])      # by name
 
     # Build sections
-    header = {"type": "header", "text": {"type": "plain_text", "text": f"❗ Daily Campaign Alerts: {ist_date}"}}
+    header = {"type": "header", "text": {"type": "mrkdwn", "text": f"*:alert: Daily Campaign Alerts: {ist_date}*"}}
 
     summary_lines = [
         ":bar_chart: Yesterday’s Summary",
