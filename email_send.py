@@ -15,8 +15,32 @@ FROM_NAME  = os.getenv("EMAIL_FROM_NAME", "EIS Campaign Updates")
 TO_LIST    = [e.strip() for e in os.getenv("EMAIL_TO", "").split(",") if e.strip()]
 CC_LIST    = [e.strip() for e in os.getenv("EMAIL_CC", "").split(",") if e.strip()]
 
-LOW_LEADS_THRESHOLD = int(os.getenv("LOW_LEADS_THRESHOLD", "250"))
-LOW_REPLY_COUNT_THRESHOLD = int(os.getenv("LOW_REPLY_COUNT_THRESHOLD", "5"))
+from decimal import Decimal, InvalidOperation  # already imported
+
+def parse_int_env(name: str, default_value: int) -> int:
+    raw = os.getenv(name, "")
+    if not raw or not raw.strip():
+        return default_value
+    raw = raw.strip()
+    # Allow simple forms like "250", "250.0", "250 leads"
+    try:
+        # First try a clean decimal to catch "250" or "250.0"
+        val = int(Decimal(raw))
+        return val if val >= 0 else default_value
+    except (InvalidOperation, ValueError):
+        # Last resort: strip non-digits and parse
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        if digits:
+            try:
+                val = int(digits)
+                return val if val >= 0 else default_value
+            except Exception:
+                pass
+        print(f"Invalid {name}='{raw}', falling back to {default_value}")
+        return default_value
+
+LOW_LEADS_THRESHOLD = parse_int_env("LOW_LEADS_THRESHOLD", 250)
+LOW_REPLY_COUNT_THRESHOLD = parse_int_env("LOW_REPLY_COUNT_THRESHOLD", 5)
 
 if not (DSN and SMTP_HOST and SMTP_USER and SMTP_PASS and FROM_EMAIL and TO_LIST):
     raise SystemExit("Missing one or more required env vars: SUPABASE_DB_URL, EMAIL_SMTP_HOST, EMAIL_USERNAME, EMAIL_PASSWORD, EMAIL_FROM, EMAIL_TO")
