@@ -27,12 +27,17 @@ jobs:
       - name: Run aggregation for IST yesterday
         run: python agg_report.py
 
+      # Slack post step
       - name: Post to Slack test channel
         env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+          LOW_LEADS_THRESHOLD: ${{ vars.LOW_LEADS_THRESHOLD }}          # optional
+          LOW_REPLY_RATE_THRESHOLD: ${{ vars.LOW_REPLY_RATE_THRESHOLD }}# optional
         run: python slack_post.py
-
+      
+      # Email step
       - name: Send Daily Email
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
@@ -44,8 +49,6 @@ jobs:
           EMAIL_FROM_NAME: ${{ secrets.EMAIL_FROM_NAME }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           EMAIL_CC: ${{ secrets.EMAIL_CC }}
-          LOW_LEADS_THRESHOLD: ${{ vars.LOW_LEADS_THRESHOLD }}
-          LOW_REPLY_COUNT_THRESHOLD: ${{ vars.LOW_REPLY_COUNT_THRESHOLD }}
+          LOW_LEADS_THRESHOLD: ${{ vars.LOW_LEADS_THRESHOLD }}             # optional
+          LOW_REPLY_COUNT_THRESHOLD: ${{ vars.LOW_REPLY_COUNT_THRESHOLD }} # optional
         run: python email_send.py
-
-
