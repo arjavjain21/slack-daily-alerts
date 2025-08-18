@@ -1,39 +1,33 @@
 import os
 import psycopg
 import requests
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 DSN = os.getenv("SUPABASE_DB_URL")
 SLACK_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_CHANNEL = os.getenv("SLACK_CHANNEL_ID")
 
-from decimal import Decimal, InvalidOperation
-
-def parse_threshold_env(name: str, default_fraction: str) -> Decimal:
-    raw = os.getenv(name, "").strip()
-    if not raw:
-        return Decimal(default_fraction)
-    try:
-        had_percent = raw.endswith("%")
-        cleaned = raw[:-1] if had_percent else raw
-        val = Decimal(cleaned)
-        # Accept "1%" or "1" as 1 percent
-        if had_percent:
-            return val / Decimal(100)
-        # If someone sets "1" meaning 1 percent, convert
-        if val > 1:
-            return val / Decimal(100)
-        return val
-    except (InvalidOperation, ValueError):
-        # Fallback and log
-        print(f"Invalid {name}='{raw}', falling back to {default_fraction}")
-        return Decimal(default_fraction)
-
-LOW_LEADS_THRESHOLD = int(os.getenv("LOW_LEADS_THRESHOLD", "250"))
-LOW_REPLY_RATE_THRESHOLD = parse_threshold_env("LOW_REPLY_RATE_THRESHOLD", "0.01")  # 1 percent
-
 if not (DSN and SLACK_TOKEN and SLACK_CHANNEL):
     raise SystemExit("Missing env vars: SUPABASE_DB_URL / SLACK_BOT_TOKEN / SLACK_CHANNEL_ID")
+
+def parse_int_env(name: str, default_value: int) -> int:
+    raw = os.getenv(name, "")
+    if not raw or not raw.strip():
+        return default_value
+    raw = raw.strip()
+    # tolerate "250", "250.0", "250 leads"
+    try:
+        val = int(Decimal(raw))
+        return val if val >= 0 else default_value
+    except Exception:
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        try:
+            return int(digits) if digits else default_value
+        except Exception:
+            return default_value
+
+LOW_LEADS_THRESHOLD = parse_int_env("LOW_LEADS_THRESHOLD", 250)
+REPLIES_ALERT_THRESHOLD = parse_int_env("REPLIES_ALERT_THRESHOLD", 5)
 
 SQL = """
 WITH ist_yesterday AS (
@@ -65,71 +59,49 @@ HAVING SUM(total_sent) > 0
 ORDER BY client_name;
 """
 
-
 def fetch_rows():
     with psycopg.connect(DSN) as conn:
         with conn.cursor() as cur:
             cur.execute(SQL)
             rows = cur.fetchall()
             cols = [d.name for d in cur.description]
-    return cols, [dict(zip(cols, r)) for r in rows]
-
-def d2pct(x: Decimal) -> str:
-    # Format Decimal fraction as percent with one decimal place, e.g., 0.0123 -> 1.2%
-    try:
-        return f"{(x * 100).quantize(Decimal('0.1'))}%"
-    except Exception:
-        return "0.0%"
+    return [dict(zip(cols, r)) for r in rows]
 
 def safe_div(num: int, den: int) -> Decimal:
     if not den:
         return Decimal(0)
     return Decimal(num) / Decimal(den)
 
+def d2pct(x: Decimal) -> str:
+    try:
+        return f"{(x * 100).quantize(Decimal('0.1'))}%"
+    except Exception:
+        return "0.0%"
+
 def build_message(rows):
     if not rows:
         return [
-            {"type": "header", "text": {"type": "plain_text", "text": "Daily Campaign Alerts"}},
-            {"type": "section", "text": {"type": "mrkdwn", "text": "No data for IST yesterday."}}
+            {"type": "section", "text": {"type": "mrkdwn", "text": "*❗ Daily Campaign Alerts: no data for IST yesterday*"}}
         ]
 
-    ist_date = rows[0]["ist_yday"]  # date object
-
-    # Global totals
+    ist_date = rows[0]["ist_yday"]
+    total_sent = sum(r["sent"] for r in rows)
     total_leads = sum(r["leads"] for r in rows)
     total_replies = sum(r["replies"] for r in rows)
     total_positives = sum(r["positives"] for r in rows)
+    overall_reply_rate = safe_div(total_positives, total_sent)  # n8n parity
 
-    overall_reply_rate = safe_div(total_replies, total_leads)
+    low_leads = sorted([(r["client_name"], r["leads"]) for r in rows if r["leads"] < LOW_LEADS_THRESHOLD],
+                       key=lambda x: (x[1], x[0]))
+    low_replies = sorted([(r["client_name"], r["replies"]) for r in rows if r["replies"] <= REPLIES_ALERT_THRESHOLD],
+                         key=lambda x: (x[1], x[0]))
+    zero_positive = sorted([(r["client_name"], r["positives"]) for r in rows if r["positives"] == 0],
+                           key=lambda x: x[0])
 
-    # Lists
-    low_leads = []
-    low_reply = []
-    zero_positive = []
-
-    for r in rows:
-        leads = r["leads"]
-        replies = r["replies"]
-        positives = r["positives"]
-        rr = safe_div(replies, leads)
-
-        if leads < LOW_LEADS_THRESHOLD:
-            low_leads.append((r["client_name"], leads))
-
-        if rr < LOW_REPLY_RATE_THRESHOLD:
-            # Include 0 leads accounts with 0 percent, to mirror your example
-            low_reply.append((r["client_name"], replies, leads, rr))
-
-        if positives == 0:
-            zero_positive.append((r["client_name"], positives))
-
-    # Sort for readability
-    low_leads.sort(key=lambda x: (x[1], x[0]))  # by leads asc
-    low_reply.sort(key=lambda x: (x[3], x[0]))  # by reply rate asc
-    zero_positive.sort(key=lambda x: x[0])      # by name
-
-    # Build sections
-    header = {"type": "header", "text": {"type": "mrkdwn", "text": f"*:alert: Daily Campaign Alerts: {ist_date}*"}}
+    header = {
+      "type": "section",
+      "text": {"type": "mrkdwn", "text": f"*❗ Daily Campaign Alerts: {ist_date}*"}
+    }
 
     summary_lines = [
         ":bar_chart: Yesterday’s Summary",
@@ -140,55 +112,46 @@ def build_message(rows):
     ]
     summary_block = {"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(summary_lines)}}
 
-    def bulletify_low_leads(items):
+    def bullets(items, fmt):
         if not items:
             return "• None"
-        return "\n".join([f"• {name}: {leads} Leads" for name, leads in items])
-
-    def bulletify_low_reply(items):
-        if not items:
-            return "• None"
-        out = []
-        for name, replies, leads, rr in items:
-            pct = d2pct(rr)
-            out.append(f"• {name}: {replies} Replies / {leads} Leads ({pct})")
-        return "\n".join(out)
-
-    def bulletify_zero_pos(items):
-        if not items:
-            return "• None"
-        return "\n".join([f"• {name}: 0 Positive Replies" for name, _ in items])
+        return "\n".join(fmt(it) for it in items)
 
     low_leads_block = {
-        "type": "section",
-        "text": {"type": "mrkdwn", "text": ":chart_with_downwards_trend: Accounts with < "
-                 f"{LOW_LEADS_THRESHOLD} New Leads Contacted Yesterday\n" + bulletify_low_leads(low_leads)}
+      "type": "section",
+      "text": {"type": "mrkdwn",
+               "text": f":chart_with_downwards_trend: Accounts with < {LOW_LEADS_THRESHOLD} New Leads Contacted Yesterday\n"
+                       + bullets(low_leads, lambda x: f"• {x[0]}: {x[1]} Leads")}
     }
 
-    low_reply_block = {
-        "type": "section",
-        "text": {"type": "mrkdwn", "text": ":turtle: Accounts with Reply Rate < "
-                 f"{d2pct(LOW_REPLY_RATE_THRESHOLD)} for Yesterday\n" + bulletify_low_reply(low_reply)}
+    low_replies_block = {
+      "type": "section",
+      "text": {"type": "mrkdwn",
+               "text": f"🗨️ Accounts with ≤ {REPLIES_ALERT_THRESHOLD} Replies\n"
+                       + bullets(low_replies, lambda x: f"• {x[0]}: {x[1]} Replies")}
     }
 
     zero_pos_block = {
-        "type": "section",
-        "text": {"type": "mrkdwn", "text": ":rotating_light: Accounts with 0 Positive Replies from Yesterday\n"
-                 + bulletify_zero_pos(zero_positive)}
+      "type": "section",
+      "text": {"type": "mrkdwn",
+               "text": ":rotating_light: Accounts with 0 Positive Replies from Yesterday\n"
+                       + bullets(zero_positive, lambda x: f"• {x[0]}: 0 Positive Replies")}
     }
 
-    return [header, summary_block, low_leads_block, low_reply_block, zero_pos_block]
+    return [header, summary_block, low_leads_block, low_replies_block, zero_pos_block]
 
 def post_to_slack(blocks):
-    url = "https://slack.com/api/chat.postMessage"
+    headers = {
+      "Authorization": f"Bearer {SLACK_TOKEN}",
+      "Content-Type": "application/json; charset=utf-8"
+    }
     payload = {"channel": SLACK_CHANNEL, "blocks": blocks, "text": "Daily Campaign Alerts"}
-    resp = requests.post(url, headers={"Authorization": f"Bearer {SLACK_TOKEN}"}, json=payload, timeout=30)
+    resp = requests.post("https://slack.com/api/chat.postMessage", headers=headers, json=payload, timeout=30)
     print("Slack response:", resp.status_code, resp.text)
     resp.raise_for_status()
 
 def main():
-    cols, rows = fetch_rows()
-    rows = [r for r in rows if r["sent"] > 0]
+    rows = fetch_rows()
     blocks = build_message(rows)
     post_to_slack(blocks)
 
