@@ -1,35 +1,34 @@
 import os
+import ssl
 import smtplib
 import psycopg
 from email.message import EmailMessage
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
-# ---------- Config ----------
-DSN = os.getenv("SUPABASE_DB_URL")
-SMTP_HOST = os.getenv("EMAIL_SMTP_HOST")
-SMTP_PORT = int(os.getenv("EMAIL_SMTP_PORT", "587"))
-SMTP_USER = os.getenv("EMAIL_USERNAME")
-SMTP_PASS = os.getenv("EMAIL_PASSWORD")
-FROM_EMAIL = os.getenv("EMAIL_FROM")
-FROM_NAME  = os.getenv("EMAIL_FROM_NAME", "EIS Campaign Updates")
-TO_LIST    = [e.strip() for e in os.getenv("EMAIL_TO", "").split(",") if e.strip()]
-CC_LIST    = [e.strip() for e in os.getenv("EMAIL_CC", "").split(",") if e.strip()]
+# ---------- Required config from GitHub Actions secrets ----------
+DSN = (os.getenv("SUPABASE_DB_URL") or "").strip()
+SMTP_HOST = (os.getenv("EMAIL_SMTP_HOST") or "").strip()           # e.g., smtp.gmail.com or SES host
+SMTP_PORT = int((os.getenv("EMAIL_SMTP_PORT") or "587").strip())   # 587 for STARTTLS is typical
+SMTP_USER = (os.getenv("EMAIL_USERNAME") or "").strip()
+SMTP_PASS = (os.getenv("EMAIL_PASSWORD") or "").strip()
+FROM_EMAIL = (os.getenv("EMAIL_FROM") or "").strip()
+FROM_NAME  = (os.getenv("EMAIL_FROM_NAME") or "EIS Campaign Updates").strip()
 
-from decimal import Decimal, InvalidOperation  # already imported
+TO_LIST = [e.strip() for e in (os.getenv("EMAIL_TO") or "").split(",") if e.strip()]
+CC_LIST = [e.strip() for e in (os.getenv("EMAIL_CC") or "").split(",") if e.strip()]
 
+# ---------- Threshold parsing with safety ----------
 def parse_int_env(name: str, default_value: int) -> int:
     raw = os.getenv(name, "")
     if not raw or not raw.strip():
         return default_value
-    raw = raw.strip()
-    # Allow simple forms like "250", "250.0", "250 leads"
+    s = raw.strip()
     try:
-        # First try a clean decimal to catch "250" or "250.0"
-        val = int(Decimal(raw))
+        # Accept "250" or "250.0" or "250 leads"
+        val = int(Decimal(s))
         return val if val >= 0 else default_value
     except (InvalidOperation, ValueError):
-        # Last resort: strip non-digits and parse
-        digits = "".join(ch for ch in raw if ch.isdigit())
+        digits = "".join(ch for ch in s if ch.isdigit())
         if digits:
             try:
                 val = int(digits)
@@ -39,12 +38,15 @@ def parse_int_env(name: str, default_value: int) -> int:
         print(f"Invalid {name}='{raw}', falling back to {default_value}")
         return default_value
 
-LOW_LEADS_THRESHOLD = parse_int_env("LOW_LEADS_THRESHOLD", 250)
-LOW_REPLY_COUNT_THRESHOLD = parse_int_env("LOW_REPLY_COUNT_THRESHOLD", 5)
+LOW_LEADS_THRESHOLD = parse_int_env("LOW_LEADS_THRESHOLD", 250)           # matches n8n
+LOW_REPLY_COUNT_THRESHOLD = parse_int_env("LOW_REPLY_COUNT_THRESHOLD", 5)  # matches n8n
 
 if not (DSN and SMTP_HOST and SMTP_USER and SMTP_PASS and FROM_EMAIL and TO_LIST):
     raise SystemExit("Missing one or more required env vars: SUPABASE_DB_URL, EMAIL_SMTP_HOST, EMAIL_USERNAME, EMAIL_PASSWORD, EMAIL_FROM, EMAIL_TO")
 
+print(f"Using thresholds: LOW_LEADS_THRESHOLD={LOW_LEADS_THRESHOLD}, LOW_REPLY_COUNT_THRESHOLD={LOW_REPLY_COUNT_THRESHOLD}")
+
+# ---------- SQL: IST-yesterday, ACTIVE only (sent > 0), group per client ----------
 SQL = """
 WITH ist_yesterday AS (
   SELECT ((now() AT TIME ZONE 'Asia/Kolkata')::date - 1) AS d
@@ -69,7 +71,7 @@ SELECT
   SUM(positive_reply)    AS positives
 FROM base
 GROUP BY ist_yday, client_name
-HAVING SUM(total_sent) > 0           -- ACTIVE only
+HAVING SUM(total_sent) > 0         -- ACTIVE only
 ORDER BY client_name;
 """
 
@@ -92,13 +94,25 @@ def build_html(rows):
     total_replies = sum(r["replies"] for r in rows)
     total_pos = sum(r["positives"] for r in rows)
 
-    # Match n8n: Reply Rate = positives / sent
-    reply_rate_pct = f"{(Decimal(total_pos) / total_sent * 100).quantize(Decimal('0.1'))}%" if total_sent else "0.0%"
+    # n8n parity: Reply Rate in email summary = positives / sent
+    if total_sent:
+        reply_rate_pct = f"{(Decimal(total_pos) / Decimal(total_sent) * 100).quantize(Decimal('0.1'))}%"
+    else:
+        reply_rate_pct = "0.0%"
 
-    # Lists to match n8n HTML
-    leads_alerts   = sorted([(r["client_name"], r["leads"]) for r in rows if r["leads"] < LOW_LEADS_THRESHOLD], key=lambda x: (x[1], x[0]))
-    replies_alerts = sorted([(r["client_name"], r["replies"]) for r in rows if r["replies"] <= LOW_REPLY_COUNT_THRESHOLD and r["client_name"]], key=lambda x: (x[1], x[0]))
-    positives_alerts = sorted([(r["client_name"], r["positives"]) for r in rows if r["positives"] == 0 and r["client_name"]], key=lambda x: x[0])
+    # Alert sections as per n8n
+    leads_alerts = sorted(
+        [(r["client_name"], r["leads"]) for r in rows if r["client_name"] and r["leads"] < LOW_LEADS_THRESHOLD],
+        key=lambda x: (x[1], x[0])
+    )
+    replies_alerts = sorted(
+        [(r["client_name"], r["replies"]) for r in rows if r["client_name"] and r["replies"] <= LOW_REPLY_COUNT_THRESHOLD],
+        key=lambda x: (x[1], x[0])
+    )
+    positives_alerts = sorted(
+        [(r["client_name"], r["positives"]) for r in rows if r["client_name"] and r["positives"] == 0],
+        key=lambda x: x[0]
+    )
 
     def render_list(items, label):
         if not items:
@@ -147,9 +161,31 @@ def build_html(rows):
     subject = f"⚠️ Daily Campaign Alerts: {ist_date}"
     return html, subject
 
-def build_plaintext(html):
-    # Simple fallback body
+def build_plaintext():
     return "Daily Campaign Alerts. Open in an HTML-capable mail client."
+
+def smtp_connect():
+    ctx = ssl.create_default_context()
+    # Try STARTTLS on configured port first
+    try:
+        s = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30)
+        s.ehlo()
+        s.starttls(context=ctx)
+        s.ehlo()
+        s.login(SMTP_USER, SMTP_PASS)
+        print(f"SMTP connected with STARTTLS on {SMTP_HOST}:{SMTP_PORT}")
+        return s
+    except Exception as e1:
+        print(f"STARTTLS failed on {SMTP_HOST}:{SMTP_PORT}: {e1}")
+        # Try SSL on 465
+        try:
+            s = smtplib.SMTP_SSL(SMTP_HOST, 465, timeout=30, context=ctx)
+            s.ehlo()
+            s.login(SMTP_USER, SMTP_PASS)
+            print(f"SMTP connected with SSL on {SMTP_HOST}:465")
+            return s
+        except Exception as e2:
+            raise SystemExit(f"SMTP connection failed. Tried STARTTLS {SMTP_PORT} then SSL 465. Errors: {e1} | {e2}")
 
 def send_email(subject, html_body):
     msg = EmailMessage()
@@ -158,13 +194,12 @@ def send_email(subject, html_body):
     msg["To"] = ", ".join(TO_LIST)
     if CC_LIST:
         msg["Cc"] = ", ".join(CC_LIST)
-    msg.set_content(build_plaintext(html_body))
+
+    msg.set_content(build_plaintext())
     msg.add_alternative(html_body, subtype="html")
 
     recipients = TO_LIST + CC_LIST
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as s:
-        s.starttls()
-        s.login(SMTP_USER, SMTP_PASS)
+    with smtp_connect() as s:
         s.send_message(msg, from_addr=FROM_EMAIL, to_addrs=recipients)
         print(f"Sent email to {len(recipients)} recipients.")
 
