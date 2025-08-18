@@ -34,21 +34,21 @@ jobs:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
           LOW_LEADS_THRESHOLD: ${{ vars.LOW_LEADS_THRESHOLD }}          # optional
-          LOW_REPLY_RATE_THRESHOLD: ${{ vars.LOW_REPLY_RATE_THRESHOLD }}# optional
+          LOW_REPLY_RATE_THRESHOLD: ${{ vars.LOW_REPLY_RATE_THRESHOLD }} # optional
         run: python slack_post.py
       
       # Email step
-      - name: Send Daily Email
-        env:
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      # - name: Send Daily Email
+      #   env:
+      #     SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
       
-          EMAIL_SMTP_HOST: ${{ secrets.EMAIL_SMTP_HOST }}     # e.g. smtp.gmail.com
-          EMAIL_SMTP_PORT: ${{ secrets.EMAIL_SMTP_PORT }}     # set to 587 for Gmail STARTTLS, or 465 if you really want SSL
-          EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}       # must be the same mailbox as EMAIL_FROM for Gmail
-          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}       # Gmail App Password
-          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}               # same mailbox as above
-          EMAIL_FROM_NAME: ${{ secrets.EMAIL_FROM_NAME }}
+      #     EMAIL_SMTP_HOST: ${{ secrets.EMAIL_SMTP_HOST }}     # e.g. smtp.gmail.com
+      #     EMAIL_SMTP_PORT: ${{ secrets.EMAIL_SMTP_PORT }}     # set to 587 for Gmail STARTTLS, or 465 if you really want SSL
+      #     EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}       # must be the same mailbox as EMAIL_FROM for Gmail
+      #     EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}       # Gmail App Password
+      #     EMAIL_FROM: ${{ secrets.EMAIL_FROM }}               # same mailbox as above
+      #     EMAIL_FROM_NAME: ${{ secrets.EMAIL_FROM_NAME }}
       
-          EMAIL_TO: ${{ secrets.EMAIL_TO }}                   # comma separated, no brackets
-          EMAIL_CC: ${{ secrets.EMAIL_CC }}                   # comma separated, optional
-        run: python email_send.py
+      #     EMAIL_TO: ${{ secrets.EMAIL_TO }}                   # comma separated, no brackets
+      #     EMAIL_CC: ${{ secrets.EMAIL_CC }}                   # comma separated, optional
+      #   run: python email_send.py
