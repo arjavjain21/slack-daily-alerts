@@ -7,9 +7,30 @@ DSN = os.getenv("SUPABASE_DB_URL")
 SLACK_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_CHANNEL = os.getenv("SLACK_CHANNEL_ID")
 
-# Tunables via env with sane defaults
+from decimal import Decimal, InvalidOperation
+
+def parse_threshold_env(name: str, default_fraction: str) -> Decimal:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return Decimal(default_fraction)
+    try:
+        had_percent = raw.endswith("%")
+        cleaned = raw[:-1] if had_percent else raw
+        val = Decimal(cleaned)
+        # Accept "1%" or "1" as 1 percent
+        if had_percent:
+            return val / Decimal(100)
+        # If someone sets "1" meaning 1 percent, convert
+        if val > 1:
+            return val / Decimal(100)
+        return val
+    except (InvalidOperation, ValueError):
+        # Fallback and log
+        print(f"Invalid {name}='{raw}', falling back to {default_fraction}")
+        return Decimal(default_fraction)
+
 LOW_LEADS_THRESHOLD = int(os.getenv("LOW_LEADS_THRESHOLD", "250"))
-LOW_REPLY_RATE_THRESHOLD = Decimal(os.getenv("LOW_REPLY_RATE_THRESHOLD", "0.01"))  # 1% as 0.01
+LOW_REPLY_RATE_THRESHOLD = parse_threshold_env("LOW_REPLY_RATE_THRESHOLD", "0.01")  # 1 percent
 
 if not (DSN and SLACK_TOKEN and SLACK_CHANNEL):
     raise SystemExit("Missing env vars: SUPABASE_DB_URL / SLACK_BOT_TOKEN / SLACK_CHANNEL_ID")
