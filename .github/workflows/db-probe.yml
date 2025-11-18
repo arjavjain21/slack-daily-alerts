@@ -3,7 +3,7 @@ name: DB Probe
 on:
   workflow_dispatch: {}
   schedule:
-  - cron: "5 35 * * *"   # 05:05 UTC covers 05:05 during EDT
+  - cron: "35 5 * * *"   # 05:05 UTC covers 05:05 during EDT
 
 jobs:
   probe:
